@@ -48,6 +48,7 @@ while evt or (o.isOpen() and o.property("initialized")):
         # done event is sent when master connection stops session
         print("done")
         break
+    print("====================")
 # end main loop
 
 # end session
