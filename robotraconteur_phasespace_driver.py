@@ -12,13 +12,16 @@ from RobotRaconteurCompanion.Util.SensorDataUtil import SensorDataUtil
 from phasespace_lib import owl
 
 class PhaseSpaceDriver(object):
-    def __init__(self,serveraddr='127.0.0.1') -> None:
+    def __init__(self,serveraddr='127.0.0.1',tcp_udp=True) -> None:
         
         ## setup OWL obj
         self.streaming_client = owl.Context()
         self.streaming_client.open(serveraddr, "timeout=10000000")
         # initialize session
-        self.streaming_client.initialize("streaming=1")
+        if tcp_udp:
+            self.streaming_client.initialize("streaming=1")
+        else:
+            self.streaming_client.initialize("streaming=2")
 
         ## mocap data and RR
         self._fiducials=RRN.GetStructureType('com.robotraconteur.fiducial.RecognizedFiducials')
@@ -38,23 +41,46 @@ class PhaseSpaceDriver(object):
 
     def srv_start_driver(self):
         
+        ## get trackers (marker's associated rigid body)
+        self.mkr_tracker={}
+        tracker_cnt=-1
+        total_tracker_cnt=10
+        while True:
+            tracker_cnt+=1
+            tinfo=self.streaming_client.trackerInfo(tracker_cnt)
+            if tinfo is None:
+                if tracker_cnt>total_tracker_cnt:
+                    break
+                continue
+            for mkr_id in tinfo.marker_ids:
+                self.mkr_tracker[mkr_id]=tinfo.id
+        
+        ## Start streaming thread
+        self.stream_thread=threading.Thread(target=self.send_sensor_data,daemon=True)
+        self.stream_thread.start()
+        
         ## running streaming thread
-        running_flag=True
+        self._streaming=True
+        self.seqno=0
 
         print("\n")
         print("Phasespace RR Service Ready...")
     
     def send_sensor_data(self):
 
+        while not self._streaming:
+            time.sleep(0.01)
+            continue
+
         # main loop
         evt = None
-        while evt or (self.streaming_client.isOpen() and self.streaming_client.property("initialized")):
+        while self._streaming and (evt or (self.streaming_client.isOpen() and self.streaming_client.property("initialized"))):
             
             # poll for events with a timeout (microseconds)
             evt = self.streaming_client.nextEvent(1000000)
             # nothing received, keep waiting
             if not evt: continue
-            else: print(evt)
+            # else: print(evt)
             
             # clear previous list
             fiducials = self._fiducials()
@@ -65,41 +91,45 @@ class PhaseSpaceDriver(object):
                 ## get rigid body
                 if "rigids" in evt:
                     for evt_rig in evt.rigids:
-                        rec_fiducials = self._fiducial()
-                        rigid_body = mocap_data.rigid_body_data.rigid_body_list[i]
-                        rec_fiducials.fiducial_marker = 'rigid'+str(int(rigid_body.id_num))
-                        rec_fiducials.pose = self._namedposecovtype()
-                        rec_fiducials.pose.pose = self._namedposetype()
-                        rec_fiducials.pose.pose.pose = np.zeros((1,),dtype=self._posetype)
-                        rec_fiducials.pose.pose.pose[0]['position']['x'] = rigid_body.pos[0]*1000 ## mm
-                        rec_fiducials.pose.pose.pose[0]['position']['y'] = rigid_body.pos[1]*1000 ## mm
-                        rec_fiducials.pose.pose.pose[0]['position']['z'] = rigid_body.pos[2]*1000 ## mm
-                        quat = [rigid_body.rot[3],rigid_body.rot[0],rigid_body.rot[1],rigid_body.rot[2]]
-                        rec_fiducials.pose.pose.pose[0]['orientation']['w'] = quat[0]
-                        rec_fiducials.pose.pose.pose[0]['orientation']['x'] = quat[1]
-                        rec_fiducials.pose.pose.pose[0]['orientation']['y'] = quat[2]
-                        rec_fiducials.pose.pose.pose[0]['orientation']['z'] = quat[3]
-                        fiducials.recognized_fiducials.append(rec_fiducials)
+                        if evt_rig.cond>0:
+                            rec_fiducials = self._fiducial()
+                            rec_fiducials.fiducial_marker = 'rigid'+str(int(evt_rig.id))
+                            rec_fiducials.pose = self._namedposecovtype()
+                            rec_fiducials.pose.pose = self._namedposetype()
+                            rec_fiducials.pose.pose.pose = np.zeros((1,),dtype=self._posetype)
+                            rec_fiducials.pose.pose.pose[0]['position']['x'] = evt_rig.pose[0] ## mm
+                            rec_fiducials.pose.pose.pose[0]['position']['y'] = evt_rig.pose[1] ## mm
+                            rec_fiducials.pose.pose.pose[0]['position']['z'] = evt_rig.pose[2] ## mm
+                            quat = evt_rig.pose[3:]
+                            rec_fiducials.pose.pose.pose[0]['orientation']['w'] = quat[0]
+                            rec_fiducials.pose.pose.pose[0]['orientation']['x'] = quat[1]
+                            rec_fiducials.pose.pose.pose[0]['orientation']['y'] = quat[2]
+                            rec_fiducials.pose.pose.pose[0]['orientation']['z'] = quat[3]
+                            rec_fiducials.confidence = evt_rig.cond
+                            fiducials.recognized_fiducials.append(rec_fiducials)
                 
                 ## get markers
                 if "markers" in evt:
                     # print(len(mocap_data.labeled_marker_data.labeled_marker_list))
                     for evt_mkr in evt.markers:
-                        rec_fiducials = self._fiducial()
-                        model_id,marker_id = lbmarker.get_marker_id()
-                        rec_fiducials.fiducial_marker = 'marker'+str(int(marker_id))+'_rigid'+str(int(model_id))
-                        rec_fiducials.pose = self._namedposecovtype()
-                        rec_fiducials.pose.pose = self._namedposetype()
-                        rec_fiducials.pose.pose.pose = np.zeros((1,),dtype=self._posetype)
-                        rec_fiducials.pose.pose.pose[0]['position']['x'] = lbmarker.pos[0]*1000 ## mm
-                        rec_fiducials.pose.pose.pose[0]['position']['y'] = lbmarker.pos[1]*1000 ## mm
-                        rec_fiducials.pose.pose.pose[0]['position']['z'] = lbmarker.pos[2]*1000 ## mm
-                        fiducials.recognized_fiducials.append(rec_fiducials)
+                        if evt_mkr.cond>0:
+                            if evt_mkr.id in self.mkr_tracker.keys(): model_id=self.mkr_tracker[evt_mkr.id]
+                            else: model_id=0
+                            rec_fiducials = self._fiducial()
+                            rec_fiducials.fiducial_marker = 'marker'+str(int(evt_mkr.id))+'_rigid'+str(int(model_id))
+                            rec_fiducials.pose = self._namedposecovtype()
+                            rec_fiducials.pose.pose = self._namedposetype()
+                            rec_fiducials.pose.pose.pose = np.zeros((1,),dtype=self._posetype)
+                            rec_fiducials.pose.pose.pose[0]['position']['x'] = evt_mkr.x ## mm
+                            rec_fiducials.pose.pose.pose[0]['position']['y'] = evt_mkr.y ## mm
+                            rec_fiducials.pose.pose.pose[0]['position']['z'] = evt_mkr.z ## mm
+                            rec_fiducials.confidence = evt_mkr.cond
+                            fiducials.recognized_fiducials.append(rec_fiducials)
 
                 fiducials_sensor_data = self._fiducials_sensor_data()
                 fiducials_sensor_data.sensor_data = self._sensordatatype()
-                fiducials_sensor_data.sensor_data.seqno = int(mocap_data.prefix_data.frame_number)
-                nanosec = mocap_data.suffix_data.stamp_data_received*100
+                fiducials_sensor_data.sensor_data.seqno = int(self.seqno)
+                nanosec = evt.time*1000
                 fiducials_sensor_data.sensor_data.ts = np.zeros((1,),dtype=self._tstype)
                 fiducials_sensor_data.sensor_data.ts[0]['nanoseconds'] = int(nanosec%1e9)
                 fiducials_sensor_data.sensor_data.ts[0]['seconds'] = int(nanosec/1e9)
@@ -107,6 +137,8 @@ class PhaseSpaceDriver(object):
 
                 self.fiducials_sensor_data.AsyncSendPacket(fiducials_sensor_data, lambda: None)
                 self.current_fiducials_sensor_data = fiducials_sensor_data
+                
+                self.seqno+=1
                 
             elif evt.type_id == owl.Type.ERROR:
                 # handle errors
@@ -117,14 +149,15 @@ class PhaseSpaceDriver(object):
                 # done event is sent when master connection stops session
                 print("done")
                 break
-        
-        running_flag=False
 
     def srv_stop_streaming(self):
 
-        # self._streaming = False
-        # self.data_t.join()
-        self.streaming_client.shutdown()
+        self._streaming = False
+        self.stream_thread.join()
+        # end session
+        self.streaming_client.done()
+        # close socket
+        self.streaming_client.close()
     
     def capture_fiducials(self):
 
@@ -132,38 +165,11 @@ class PhaseSpaceDriver(object):
             return self.current_fiducials_sensor_data.fiducials
         else:
             return self._fiducials()
-    
-    def print_configuration(self):
-
-        print("Connection Configuration:")
-        print("  Client:          %s"% self.streaming_client.local_ip_address)
-        print("  Server:          %s"% self.streaming_client.server_ip_address)
-        print("  Command Port:    %d"% self.streaming_client.command_port)
-        print("  Data Port:       %d"% self.streaming_client.data_port)
-
-        if self.streaming_client.use_multicast:
-            print("  Using Multicast")
-            print("  Multicast Group: %s"% self.streaming_client.multicast_address)
-        else:
-            print("  Using Unicast")
-
-        #NatNet Server Info
-        application_name = self.streaming_client.get_application_name()
-        nat_net_requested_version = self.streaming_client.get_nat_net_requested_version()
-        nat_net_version_server = self.streaming_client.get_nat_net_version_server()
-        server_version = self.streaming_client.get_server_version()
-
-        print("  NatNet Server Info")
-        print("    Application Name %s" %(application_name))
-        print("    NatNetVersion  %d %d %d %d"% (nat_net_version_server[0], nat_net_version_server[1], nat_net_version_server[2], nat_net_version_server[3]))
-        print("    ServerVersion  %d %d %d %d"% (server_version[0], server_version[1], server_version[2], server_version[3]))
-        print("  NatNet Bitstream Requested")
-        print("    NatNetVersion  %d %d %d %d"% (nat_net_requested_version[0], nat_net_requested_version[1],\
-        nat_net_requested_version[2], nat_net_requested_version[3]))
 
 def main():
     parser = argparse.ArgumentParser(description="Phasespace Mocap driver service for Robot Raconteur")
-    parser.add_argument("--server-ip", type=str, default="127.0.0.1", help="the ip address of the Phasespace server")
+    parser.add_argument("--server-ip", type=str, default="127.0.0.1", help="The ip address of the Phasespace server")
+    parser.add_argument("--tcp", type=bool, default=True, help="TCP (True) or UDP (False). Default: TCP")
     parser.add_argument("--wait-signal",action='store_const',const=True,default=False, help="wait for SIGTERM orSIGINT (Linux only)")
 
     args,_ = parser.parse_known_args()
@@ -172,7 +178,7 @@ def main():
     rr_args = ["--robotraconteur-jumbo-message=true"] + sys.argv
     RRC.RegisterStdRobDefServiceTypes(RRN)
 
-    phasespace_obj = PhaseSpaceDriver(args.server_ip)
+    phasespace_obj = PhaseSpaceDriver(args.server_ip,args.tcp)
 
     with RR.ServerNodeSetup("com.robotraconteur.fiducial.FiducialSensor",59823,argv=rr_args):
         
@@ -193,6 +199,7 @@ def main():
                 raw_input("Server started, press enter to quit...")
 
         phasespace_obj.srv_stop_streaming()
+        print("PhaseSpace RR Sever End.")
 
 if __name__ == "__main__":
     main()

@@ -21,6 +21,14 @@ o.open(SERVER, "timeout=10000000")
 # initialize session
 o.initialize("streaming=1")
 
+# tinfo=o.trackerInfo(1)
+# print(tinfo)
+# tinfo=o.trackerInfo(2)
+# print(tinfo)
+# tinfo=o.trackerInfo(3)
+# print(tinfo)
+# exit()
+
 # main loop
 evt = None
 while evt or (o.isOpen() and o.property("initialized")):
