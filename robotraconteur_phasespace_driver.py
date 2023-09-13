@@ -12,7 +12,7 @@ from RobotRaconteurCompanion.Util.SensorDataUtil import SensorDataUtil
 from phasespace_lib import owl
 
 class PhaseSpaceDriver(object):
-    def __init__(self,serveraddr='127.0.0.1',tcp_udp=True) -> None:
+    def __init__(self,serveraddr='127.0.0.1',tcp_udp=True,frequency=None) -> None:
         
         ## setup OWL obj
         self.streaming_client = owl.Context()
@@ -22,6 +22,10 @@ class PhaseSpaceDriver(object):
             self.streaming_client.initialize("streaming=1")
         else:
             self.streaming_client.initialize("streaming=2")
+        # self.streaming_client.initialize("streaming=1")
+            
+        ## frequency
+        self.frequency=frequency
 
         ## mocap data and RR
         self._fiducials=RRN.GetStructureType('com.robotraconteur.fiducial.RecognizedFiducials')
@@ -73,11 +77,16 @@ class PhaseSpaceDriver(object):
             continue
 
         # main loop
+        start_time=time.perf_counter()
         evt = None
         while self._streaming and (evt or (self.streaming_client.isOpen() and self.streaming_client.property("initialized"))):
             
-            # poll for events with a timeout (microseconds)
-            evt = self.streaming_client.nextEvent(1000000)
+            while (time.perf_counter()-start_time)<(1/self.frequency):
+                # poll for events with a timeout (microseconds)
+                evt = self.streaming_client.nextEvent(1000000)
+                continue
+            
+            start_time=time.perf_counter()
             # nothing received, keep waiting
             if not evt: continue
             # else: print(evt)
@@ -170,6 +179,7 @@ def main():
     parser = argparse.ArgumentParser(description="Phasespace Mocap driver service for Robot Raconteur")
     parser.add_argument("--server-ip", type=str, default="127.0.0.1", help="The ip address of the Phasespace server")
     parser.add_argument("--tcp", type=bool, default=True, help="TCP (True) or UDP (False). Default: TCP")
+    parser.add_argument("--frequency", type=int, default=1000, help="Publish Frequency")
     parser.add_argument("--wait-signal",action='store_const',const=True,default=False, help="wait for SIGTERM orSIGINT (Linux only)")
 
     args,_ = parser.parse_known_args()
@@ -178,7 +188,7 @@ def main():
     rr_args = ["--robotraconteur-jumbo-message=true"] + sys.argv
     RRC.RegisterStdRobDefServiceTypes(RRN)
 
-    phasespace_obj = PhaseSpaceDriver(args.server_ip,args.tcp)
+    phasespace_obj = PhaseSpaceDriver(args.server_ip,args.tcp,args.frequency)
 
     with RR.ServerNodeSetup("com.robotraconteur.fiducial.FiducialSensor",59823,argv=rr_args):
         

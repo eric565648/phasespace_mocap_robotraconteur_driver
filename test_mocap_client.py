@@ -12,9 +12,11 @@ def main():
     packet_num=0
     packet_num_total=1000
     st = time.time()
+    all_stamps=[]
     while True:
         try:
             data = sensor_data_srv.ReceivePacketWait()
+            all_stamps.append(float(data.sensor_data.ts[0]['seconds'])+data.sensor_data.ts[0]['nanoseconds']*1e-9)
             packet_num+=1
             if packet_num>=packet_num_total:
                 break
@@ -30,6 +32,8 @@ def main():
         print("===========================================")
     et = time.time()
     print("Ave FPS:",packet_num_total/(et-st))
+    # print(all_stamps)
+    print((all_stamps[-1]-all_stamps[0])/packet_num_total)
 
 if __name__=='__main__':
     main()
