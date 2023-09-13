@@ -19,9 +19,9 @@ class PhaseSpaceDriver(object):
         self.streaming_client.open(serveraddr, "timeout=10000000")
         # initialize session
         if tcp_udp:
-            self.streaming_client.initialize("streaming=1")
+            self.streaming_client.initialize("streaming=1 frequency="+str(frequency))
         else:
-            self.streaming_client.initialize("streaming=2")
+            self.streaming_client.initialize("streaming=2 frequency="+str(frequency))
         # self.streaming_client.initialize("streaming=1")
             
         ## frequency
@@ -81,10 +81,12 @@ class PhaseSpaceDriver(object):
         evt = None
         while self._streaming and (evt or (self.streaming_client.isOpen() and self.streaming_client.property("initialized"))):
             
-            while (time.perf_counter()-start_time)<(1/self.frequency):
-                # poll for events with a timeout (microseconds)
-                evt = self.streaming_client.nextEvent(1000000)
-                continue
+            # while (time.perf_counter()-start_time)<(1/self.frequency):
+            #     # poll for events with a timeout (microseconds)
+            #     evt = self.streaming_client.nextEvent(1000000)
+            #     continue
+            
+            evt = self.streaming_client.nextEvent(1000000)
             
             start_time=time.perf_counter()
             # nothing received, keep waiting
@@ -138,7 +140,7 @@ class PhaseSpaceDriver(object):
                 fiducials_sensor_data = self._fiducials_sensor_data()
                 fiducials_sensor_data.sensor_data = self._sensordatatype()
                 fiducials_sensor_data.sensor_data.seqno = int(self.seqno)
-                nanosec = evt.time*1000
+                nanosec = evt.time
                 fiducials_sensor_data.sensor_data.ts = np.zeros((1,),dtype=self._tstype)
                 fiducials_sensor_data.sensor_data.ts[0]['nanoseconds'] = int(nanosec%1e9)
                 fiducials_sensor_data.sensor_data.ts[0]['seconds'] = int(nanosec/1e9)
